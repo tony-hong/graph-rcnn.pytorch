@@ -13,19 +13,26 @@ class Baseline(nn.Module):
     def __init__(self, cfg, in_channels):
         super(Baseline, self).__init__()
         self.cfg = cfg
-        self.feature_extractor = make_roi_relation_feature_extractor(cfg, in_channels)
-        self.predictor = make_roi_relation_predictor(cfg, self.feature_extractor.out_channels)
+        self.pred_feature_extractor = make_roi_relation_feature_extractor(cfg, in_channels)
+        self.predictor = make_roi_relation_predictor(cfg, self.pred_feature_extractor.out_channels)
 
     def forward(self, features, proposals, proposal_pairs):
         obj_class_logits = None # no need to predict object class again
         if self.training:
-            x = self.feature_extractor(features, proposal_pairs)
+            x, rel_inds = self.pred_feature_extractor(features, proposals, proposal_pairs)
             rel_class_logits = self.predictor(x)
         else:
             with torch.no_grad():
-                x = self.feature_extractor(features, proposal_pairs)
+                x, rel_inds = self.pred_feature_extractor(features, proposals, proposal_pairs)
                 rel_class_logits = self.predictor(x)
-        return x, obj_class_logits, rel_class_logits
+
+        if obj_class_logits is None:
+            logits = torch.cat([proposal.get_field("logits") for proposal in proposals], 0)
+            obj_class_labels = logits[:, 1:].max(1)[1] + 1
+        else:
+            obj_class_labels = obj_class_logits[:, 1:].max(1)[1] + 1
+
+        return x, obj_class_logits, rel_class_logits, obj_class_labels, rel_inds
 
 def build_baseline_model(cfg, in_channels):
     return Baseline(cfg, in_channels)

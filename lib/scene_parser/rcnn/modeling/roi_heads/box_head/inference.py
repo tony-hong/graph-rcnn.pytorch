@@ -58,8 +58,8 @@ class PostProcessor(nn.Module):
             results (list[BoxList]): one BoxList for each image, containing
                 the extra fields labels and scores
         """
-        class_logits, box_regression = x
-        class_prob = F.softmax(class_logits, -1)
+        class_logit, box_regression = x
+        class_prob = F.softmax(class_logit, -1)
 
         # TODO think about a representation of batch of boxes
         image_shapes = [box.size for box in boxes]
@@ -79,36 +79,40 @@ class PostProcessor(nn.Module):
 
         proposals = proposals.split(boxes_per_image, dim=0)
         class_prob = class_prob.split(boxes_per_image, dim=0)
+        class_logit = class_logit.split(boxes_per_image, dim=0)
 
         results = []
-        for prob, boxes_per_img, features_per_img, image_shape in zip(
-            class_prob, proposals, features, image_shapes
+        for prob, logit, boxes_per_img, features_per_img, image_shape in zip(
+            class_prob, class_logit, proposals, features, image_shapes
         ):
-            boxlist = self.prepare_boxlist(boxes_per_img, features_per_img, prob, image_shape)
+            boxlist = self.prepare_boxlist(boxes_per_img, features_per_img, prob, logit, image_shape)
             boxlist = boxlist.clip_to_image(remove_empty=False)
             if not self.bbox_aug_enabled:  # If bbox aug is enabled, we will do it later
                 if not self.relation_on:
-                    boxlist = self.filter_results(boxlist, num_classes)
+                    boxlist_filtered = self.filter_results(boxlist, num_classes)
                 else:
                     # boxlist_pre = self.filter_results(boxlist, num_classes)
-                    boxlist = self.filter_results_nm(boxlist, num_classes)
+                    boxlist_filtered = self.filter_results_nm(boxlist, num_classes)
 
                     # to enforce minimum number of detections per image
                     # we will do a binary search on the confidence threshold
                     score_thresh = 0.05
-                    while len(boxlist) < self.min_detections_per_img:
+                    while len(boxlist_filtered) < self.min_detections_per_img:
                         score_thresh /= 2.0
                         print(("\nNumber of proposals {} is too small, "
                                "retrying filter_results with score thresh"
-                               " = {}").format(len(boxlist), score_thresh))
-                        boxlist = self.filter_results_nm(boxlist, num_classes, thresh=score_thresh)
-            if len(boxlist) == 0:
-                import pdb; pdb.set_trace()
+                               " = {}").format(len(boxlist_filtered), score_thresh))
+                        boxlist_filtered = self.filter_results_nm(boxlist, num_classes, thresh=score_thresh)
+            else:
+                boxlist_filtered = boxlist
 
-            results.append(boxlist)
+            if len(boxlist) == 0:
+                raise ValueError("boxlist shoud not be empty!")
+
+            results.append(boxlist_filtered)
         return results
 
-    def prepare_boxlist(self, boxes, features, scores, image_shape):
+    def prepare_boxlist(self, boxes, features, scores, logits, image_shape):
         """
         Returns BoxList from `boxes` and adds probability scores information
         as an extra field
@@ -125,6 +129,7 @@ class PostProcessor(nn.Module):
         scores = scores.reshape(-1)
         boxlist = BoxList(boxes, image_shape, mode="xyxy")
         boxlist.add_field("scores", scores)
+        boxlist.add_field("logits", logits)
         boxlist.add_field("features", features)
         return boxlist
 
@@ -136,6 +141,7 @@ class PostProcessor(nn.Module):
         # if we had multi-class NMS, we could perform this directly on the boxlist
         boxes = boxlist.bbox.reshape(-1, num_classes * 4)
         scores = boxlist.get_field("scores").reshape(-1, num_classes)
+        logits = boxlist.get_field("logits").reshape(-1, num_classes)
         features = boxlist.get_field("features")
 
         device = scores.device
@@ -182,6 +188,7 @@ class PostProcessor(nn.Module):
         # if we had multi-class NMS, we could perform this directly on the boxlist
         boxes = boxlist.bbox.reshape(-1, num_classes * 4)
         scores = boxlist.get_field("scores").reshape(-1, num_classes)
+        logits = boxlist.get_field("logits").reshape(-1, num_classes)
         features = boxlist.get_field("features")
 
         valid_cls = (scores[:, 1:].max(0)[0] > thresh).nonzero() + 1
@@ -225,11 +232,13 @@ class PostProcessor(nn.Module):
         labels_all = labels_pre[inds_all]
         scores_all = scores_pre[inds_all]
         features_all = features[inds_all]
+        logits_all = logits[inds_all]
 
         box_inds_all = inds_all * scores.shape[1] + labels_all
         result = BoxList(boxlist.bbox.view(-1, 4)[box_inds_all], boxlist.size, mode="xyxy")
         result.add_field("labels", labels_all)
         result.add_field("scores", scores_all)
+        result.add_field("logits", logits_all)
         result.add_field("features", features_all)
         number_of_detections = len(result)
 

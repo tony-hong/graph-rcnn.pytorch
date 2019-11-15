@@ -8,9 +8,9 @@ from lib.scene_parser.rcnn.modeling.backbone import resnet
 from lib.scene_parser.rcnn.modeling.poolers import Pooler
 from lib.scene_parser.rcnn.modeling.make_layers import group_norm
 from lib.scene_parser.rcnn.modeling.make_layers import make_fc
-from .sparse_targets import _get_tensor_from_boxlist, _get_rel_inds
 
-@registry.ROI_RELATION_FEATURE_EXTRACTORS.register("ResNet50Conv5ROIRelationFeatureExtractor")
+
+@registry.ROI_RELATION_BOX_FEATURE_EXTRACTORS.register("ResNet50Conv5ROIFeatureExtractor")
 class ResNet50Conv5ROIFeatureExtractor(nn.Module):
     def __init__(self, config, in_channels):
         super(ResNet50Conv5ROIFeatureExtractor, self).__init__()
@@ -40,29 +40,13 @@ class ResNet50Conv5ROIFeatureExtractor(nn.Module):
         self.head = head
         self.out_channels = head.out_channels
 
-    def _union_box_feats(self, x, proposal_pairs):
-        proposals_union = [proposal_pair.copy_with_union() for proposal_pair in proposal_pairs]
-        x_union = self.pooler(x, proposals_union)
-        x = self.head(x_union)
+    def forward(self, x, proposals):
+        x = self.pooler(x, proposals)
+        x = self.head(x)
         return x
 
-    def forward(self, x, proposals, proposal_pairs):
 
-        # acquire tensor format per batch data
-        # bboxes, cls_prob (N, k)
-        # im_inds: (N,1), img ind for each roi in the batch
-        obj_box_priors, obj_labels, im_inds \
-            = _get_tensor_from_boxlist(proposals, 'labels')
-        # get index in the proposal pairs
-        _, proposal_idx_pairs, im_inds_pairs = _get_tensor_from_boxlist(
-            proposal_pairs, 'idx_pairs')
-
-        rel_inds = _get_rel_inds(im_inds, im_inds_pairs, proposal_idx_pairs)
-        x = self._union_box_feats(x, proposal_pairs)
-        return x, rel_inds
-
-
-@registry.ROI_RELATION_FEATURE_EXTRACTORS.register("FPN2MLPRelationFeatureExtractor")
+@registry.ROI_RELATION_BOX_FEATURE_EXTRACTORS.register("FPN2MLPFeatureExtractor")
 class FPN2MLPFeatureExtractor(nn.Module):
     """
     Heads for FPN for classification
@@ -71,17 +55,17 @@ class FPN2MLPFeatureExtractor(nn.Module):
     def __init__(self, cfg, in_channels):
         super(FPN2MLPFeatureExtractor, self).__init__()
 
-        resolution = cfg.MODEL.ROI_RELATION_HEAD.POOLER_RESOLUTION
-        scales = cfg.MODEL.ROI_RELATION_HEAD.POOLER_SCALES
-        sampling_ratio = cfg.MODEL.ROI_RELATION_HEAD.POOLER_SAMPLING_RATIO
+        resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        scales = cfg.MODEL.ROI_BOX_HEAD.POOLER_SCALES
+        sampling_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
         pooler = Pooler(
             output_size=(resolution, resolution),
             scales=scales,
             sampling_ratio=sampling_ratio,
         )
         input_size = in_channels * resolution ** 2
-        representation_size = cfg.MODEL.ROI_RELATION_HEAD.MLP_HEAD_DIM
-        use_gn = cfg.MODEL.ROI_RELATION_HEAD.USE_GN
+        representation_size = cfg.MODEL.ROI_BOX_HEAD.MLP_HEAD_DIM
+        use_gn = cfg.MODEL.ROI_BOX_HEAD.USE_GN
         self.pooler = pooler
         self.fc6 = make_fc(input_size, representation_size, use_gn)
         self.fc7 = make_fc(representation_size, representation_size, use_gn)
@@ -97,7 +81,7 @@ class FPN2MLPFeatureExtractor(nn.Module):
         return x
 
 
-@registry.ROI_RELATION_FEATURE_EXTRACTORS.register("FPNXconv1fcRelationFeatureExtractor")
+@registry.ROI_RELATION_BOX_FEATURE_EXTRACTORS.register("FPNXconv1fcFeatureExtractor")
 class FPNXconv1fcFeatureExtractor(nn.Module):
     """
     Heads for FPN for classification
@@ -106,9 +90,9 @@ class FPNXconv1fcFeatureExtractor(nn.Module):
     def __init__(self, cfg, in_channels):
         super(FPNXconv1fcFeatureExtractor, self).__init__()
 
-        resolution = cfg.MODEL.ROI_RELATION_HEAD.POOLER_RESOLUTION
-        scales = cfg.MODEL.ROI_RELATION_HEAD.POOLER_SCALES
-        sampling_ratio = cfg.MODEL.ROI_RELATION_HEAD.POOLER_SAMPLING_RATIO
+        resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        scales = cfg.MODEL.ROI_BOX_HEAD.POOLER_SCALES
+        sampling_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
         pooler = Pooler(
             output_size=(resolution, resolution),
             scales=scales,
@@ -116,10 +100,10 @@ class FPNXconv1fcFeatureExtractor(nn.Module):
         )
         self.pooler = pooler
 
-        use_gn = cfg.MODEL.ROI_RELATION_HEAD.USE_GN
-        conv_head_dim = cfg.MODEL.ROI_RELATION_HEAD.CONV_HEAD_DIM
-        num_stacked_convs = cfg.MODEL.ROI_RELATION_HEAD.NUM_STACKED_CONVS
-        dilation = cfg.MODEL.ROI_RELATION_HEAD.DILATION
+        use_gn = cfg.MODEL.ROI_BOX_HEAD.USE_GN
+        conv_head_dim = cfg.MODEL.ROI_BOX_HEAD.CONV_HEAD_DIM
+        num_stacked_convs = cfg.MODEL.ROI_BOX_HEAD.NUM_STACKED_CONVS
+        dilation = cfg.MODEL.ROI_BOX_HEAD.DILATION
 
         xconvs = []
         for ix in range(num_stacked_convs):
@@ -148,7 +132,7 @@ class FPNXconv1fcFeatureExtractor(nn.Module):
                         torch.nn.init.constant_(l.bias, 0)
 
         input_size = conv_head_dim * resolution ** 2
-        representation_size = cfg.MODEL.ROI_RELATION_HEAD.MLP_HEAD_DIM
+        representation_size = cfg.MODEL.ROI_BOX_HEAD.MLP_HEAD_DIM
         self.fc6 = make_fc(input_size, representation_size, use_gn=False)
         self.out_channels = representation_size
 
@@ -160,8 +144,8 @@ class FPNXconv1fcFeatureExtractor(nn.Module):
         return x
 
 
-def make_roi_relation_feature_extractor(cfg, in_channels):
-    func = registry.ROI_RELATION_FEATURE_EXTRACTORS[
-        cfg.MODEL.ROI_RELATION_HEAD.FEATURE_EXTRACTOR
+def make_roi_relation_box_feature_extractor(cfg, in_channels):
+    func = registry.ROI_RELATION_BOX_FEATURE_EXTRACTORS[
+        cfg.MODEL.ROI_BOX_HEAD.FEATURE_EXTRACTOR
     ]
     return func(cfg, in_channels)

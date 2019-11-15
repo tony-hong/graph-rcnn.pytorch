@@ -1,47 +1,9 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 import torch
-from torch.nn import functional as F
+import torch.nn as nn
 
-from lib.scene_parser.rcnn.layers import smooth_l1_loss
-from lib.scene_parser.rcnn.modeling.box_coder import BoxCoder
-from lib.scene_parser.rcnn.modeling.matcher import Matcher
-from lib.scene_parser.rcnn.modeling.pair_matcher import PairMatcher
-from lib.scene_parser.rcnn.structures.boxlist_ops import boxlist_iou
-from lib.scene_parser.rcnn.structures.bounding_box_pair import BoxPairList
-from lib.scene_parser.rcnn.modeling.balanced_positive_negative_pair_sampler import (
-    BalancedPositiveNegativePairSampler
-)
-from lib.scene_parser.rcnn.modeling.utils import cat
-
-
-class FastRCNNLossComputation(object):
-    """
-    Computes the loss for Faster R-CNN.
-    Also supports FPN
-    """
-
-    def __init__(
-        self,
-        proposal_matcher,
-        fg_bg_pair_sampler,
-        box_coder,
-        cls_agnostic_bbox_reg=False,
-        use_matched_pairs_only=False,
-        minimal_matched_pairs=0,
-    ):
-        """
-        Arguments:
-            proposal_matcher (Matcher)
-            fg_bg_sampler (BalancedPositiveNegativePairSampler)
-            box_coder (BoxCoder)
-            use_matched_pairs_only: sample only among the pairs that have large iou with ground-truth pairs
-        """
-        self.proposal_pair_matcher = proposal_matcher
-        self.fg_bg_pair_sampler = fg_bg_pair_sampler
-        self.box_coder = box_coder
-        self.cls_agnostic_bbox_reg = cls_agnostic_bbox_reg
-        self.use_matched_pairs_only = use_matched_pairs_only
-        self.minimal_matched_pairs = minimal_matched_pairs
+class RelPN(nn.Module):
+    def __init__(self, cfg, in_dim):
+        super(RelPN, self).__init__()
 
     def match_targets_to_proposals(self, proposal, target):
         match_quality_matrix = boxlist_iou(target, proposal)
@@ -137,7 +99,7 @@ class FastRCNNLossComputation(object):
 
         return labels, proposal_pairs
 
-    def subsample(self, proposals, targets):
+    def forward(self, proposals, targets):
         """
         This method performs the positive/negative sampling, and return
         the sampled proposals.
@@ -173,69 +135,5 @@ class FastRCNNLossComputation(object):
         self._proposal_pairs = proposal_pairs
         return proposal_pairs
 
-    def __call__(self, class_logits):
-        """
-        Computes the loss for Faster R-CNN.
-        This requires that the subsample method has been called beforehand.
-
-        Arguments:
-            class_logits (list[Tensor])
-
-        Returns:
-            classification_loss (Tensor)
-        """
-
-        class_logits = cat(class_logits, dim=0)
-        device = class_logits.device
-
-        if not hasattr(self, "_proposal_pairs"):
-            raise RuntimeError("subsample needs to be called before")
-
-        proposals = self._proposal_pairs
-
-        labels = cat([proposal.get_field("labels") for proposal in proposals], dim=0)
-
-        rel_fg_cnt = len(labels.nonzero())
-        rel_bg_cnt = labels.shape[0] - rel_fg_cnt
-        ce_weights = labels.new(class_logits.size(1)).fill_(1).float()
-        ce_weights[0] = float(rel_fg_cnt) / (rel_bg_cnt + 1e-5)
-        classification_loss = F.cross_entropy(class_logits, labels, weight=ce_weights)
-
-        return classification_loss
-
-    def obj_classification_loss(self, proposals, class_logits):
-        class_logits = cat(class_logits, dim=0)
-
-        device = class_logits.device
-
-        labels = cat([proposal.get_field("labels") for proposal in proposals], dim=0)
-
-        classification_loss = F.cross_entropy(class_logits, labels)
-
-        return classification_loss
-
-
-def make_roi_relation_loss_evaluator(cfg):
-    matcher = PairMatcher(
-        cfg.MODEL.ROI_HEADS.FG_IOU_THRESHOLD,
-        cfg.MODEL.ROI_HEADS.BG_IOU_THRESHOLD,
-        allow_low_quality_matches=False,
-    )
-
-    bbox_reg_weights = cfg.MODEL.ROI_HEADS.BBOX_REG_WEIGHTS
-    box_coder = BoxCoder(weights=bbox_reg_weights)
-
-    fg_bg_sampler = BalancedPositiveNegativePairSampler(
-        cfg.MODEL.ROI_RELATION_HEAD.BATCH_SIZE_PER_IMAGE, cfg.MODEL.ROI_RELATION_HEAD.POSITIVE_FRACTION
-    )
-
-    cls_agnostic_bbox_reg = cfg.MODEL.CLS_AGNOSTIC_BBOX_REG
-
-    loss_evaluator = FastRCNNLossComputation(
-        matcher,
-        fg_bg_sampler,
-        box_coder,
-        cls_agnostic_bbox_reg
-    )
-
-    return loss_evaluator
+def make_relation_proposal_network(cfg):
+    return RelPN(cfg)
